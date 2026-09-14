@@ -8,6 +8,7 @@ import {
   Form,
   Link,
   useActionData,
+  useFetcher,
   useLoaderData,
   useNavigation,
   useSearchParams,
@@ -95,23 +96,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   await authenticate.admin(request);
 
-  const formData = await request.formData();
-  const intent = String(formData.get("intent") || "");
-  const subscriptionId = String(formData.get("subscriptionId") || "").trim();
-
-  if (intent !== "cancel") {
-    return { ok: false as const, message: "Невідома дія", subscriptionId: null };
-  }
-
-  if (!subscriptionId) {
-    return {
-      ok: false as const,
-      message: "Немає ID підписки",
-      subscriptionId: null,
-    };
-  }
-
   try {
+    const formData = await request.formData();
+    const intent = String(formData.get("intent") || "");
+    const subscriptionId = String(formData.get("subscriptionId") || "").trim();
+
+    if (intent !== "cancel") {
+      return {
+        ok: false as const,
+        message: "Невідома дія",
+        subscriptionId: null,
+      };
+    }
+
+    if (!subscriptionId) {
+      return {
+        ok: false as const,
+        message: "Немає ID підписки",
+        subscriptionId: null,
+      };
+    }
+
     await cancelSubscription(subscriptionId);
     return {
       ok: true as const,
@@ -119,6 +124,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       subscriptionId,
     };
   } catch (error) {
+    // Let Shopify auth redirects bubble up.
+    if (error instanceof Response && error.status >= 300 && error.status < 400) {
+      throw error;
+    }
+
     const message =
       error instanceof Response
         ? await error.text()
@@ -126,7 +136,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ? error.message
           : "Не вдалося скасувати підписку";
 
-    return { ok: false as const, message, subscriptionId };
+    return {
+      ok: false as const,
+      message: message.slice(0, 300),
+      subscriptionId: null,
+    };
   }
 };
 
@@ -151,6 +165,7 @@ function buildAppHref(
 export default function SubscriptionsPage() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  const cancelFetcher = useFetcher<typeof action>();
   const navigation = useNavigation();
   const [searchParams] = useSearchParams();
   const shopify = useAppBridge();
@@ -158,22 +173,33 @@ export default function SubscriptionsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
 
+  const cancelResult = cancelFetcher.data ?? actionData;
   const isCancelling =
-    navigation.state !== "idle" &&
-    navigation.formData?.get("intent") === "cancel";
+    cancelFetcher.state !== "idle" &&
+    cancelFetcher.formData?.get("intent") === "cancel";
+  const cancellingId = String(
+    cancelFetcher.formData?.get("subscriptionId") || "",
+  );
   const isNavigating = navigation.state !== "idle";
 
   useEffect(() => {
-    if (!actionData?.message) return;
+    if (!cancelResult?.message) return;
 
-    shopify.toast.show(actionData.message, {
-      isError: !actionData.ok,
+    shopify.toast.show(cancelResult.message, {
+      isError: !cancelResult.ok,
     });
 
-    if (actionData.ok) {
+    if (cancelResult.ok) {
       setConfirmId(null);
     }
-  }, [actionData, shopify]);
+  }, [cancelResult, shopify]);
+
+  const submitCancel = (subscriptionId: string) => {
+    cancelFetcher.submit(
+      { intent: "cancel", subscriptionId },
+      { method: "post" },
+    );
+  };
 
   const FILTER_KEYS = [
     "page",
@@ -402,29 +428,21 @@ export default function SubscriptionsPage() {
                                   <span>Скасовано</span>
                                 ) : confirmId === id ? (
                                   <>
-                                    <Form method="post">
-                                      <input
-                                        type="hidden"
-                                        name="intent"
-                                        value="cancel"
-                                      />
-                                      <input
-                                        type="hidden"
-                                        name="subscriptionId"
-                                        value={id}
-                                      />
-                                      <button
-                                        type="submit"
-                                        style={dangerButtonStyle}
-                                        disabled={isCancelling}
-                                      >
-                                        Підтвердити
-                                      </button>
-                                    </Form>
+                                    <button
+                                      type="button"
+                                      style={dangerButtonStyle}
+                                      disabled={isCancelling}
+                                      onClick={() => submitCancel(id)}
+                                    >
+                                      {isCancelling && cancellingId === id
+                                        ? "Скасування…"
+                                        : "Підтвердити"}
+                                    </button>
                                     <button
                                       type="button"
                                       style={secondaryButtonStyle}
                                       onClick={() => setConfirmId(null)}
+                                      disabled={isCancelling}
                                     >
                                       Назад
                                     </button>

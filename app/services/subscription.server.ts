@@ -128,12 +128,13 @@ async function parseApiResponse(response: Response): Promise<unknown> {
 
   if (!response.ok) {
     const record = asRecord(payload);
-    const message =
+    const rawMessage =
       (typeof record?.message === "string" && record.message) ||
       (typeof record?.error === "string" && record.error) ||
+      text ||
       `Subscription API error (${response.status})`;
 
-    throw new Response(message, { status: response.status });
+    throw new Error(stripHtml(rawMessage).slice(0, 300));
   }
 
   const record = asRecord(payload);
@@ -142,10 +143,14 @@ async function parseApiResponse(response: Response): Promise<unknown> {
     (record.status === "error" || record.success === false) &&
     typeof record.message === "string"
   ) {
-    throw new Response(record.message, { status: 502 });
+    throw new Error(stripHtml(record.message).slice(0, 300));
   }
 
   return payload;
+}
+
+function stripHtml(value: string) {
+  return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export type SubscriptionListQuery = {
